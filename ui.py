@@ -1,8 +1,10 @@
 """Modern customtkinter GUI for Node Toggle."""
 
+import os
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox
+from PIL import Image
 import queue
 from typing import Optional
 
@@ -29,6 +31,7 @@ RED = "#ef4444"
 
 FONT_FAMILY = "Helvetica Neue"
 LEVEL_NAMES = [l.display_name for l in NodeLevel]
+ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toggle.png")
 
 
 class AssignmentRow:
@@ -197,8 +200,8 @@ class NodeToggleApp:
         self._rows: list[AssignmentRow] = []
 
         self.root.title("Node Toggle")
-        self.root.geometry("420x400")
-        self.root.minsize(400, 300)
+        self.root.geometry("420x540")
+        self.root.minsize(400, 400)
         self.root.configure(fg_color=BG_DARK)
 
         self._build_ui()
@@ -226,6 +229,15 @@ class NodeToggleApp:
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
         ).pack(side=tk.LEFT)
+
+        # App icon top-right
+        if os.path.exists(ICON_PATH):
+            icon_image = ctk.CTkImage(
+                light_image=Image.open(ICON_PATH),
+                dark_image=Image.open(ICON_PATH),
+                size=(32, 32),
+            )
+            ctk.CTkLabel(status_row, image=icon_image, text="").pack(side=tk.RIGHT)
 
         self.timeline_var = ctk.StringVar(value="")
         ctk.CTkLabel(
