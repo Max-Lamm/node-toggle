@@ -79,6 +79,8 @@ def main():
     # Periodic connection polling
     def poll_connection():
         was_connected = resolve_conn.connected
+        if not was_connected:
+            resolve_conn.connect()
         resolve_conn.refresh_context()
         app.update_status_bar()
         if resolve_conn.connected and not was_connected:
