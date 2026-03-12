@@ -12,12 +12,16 @@ import os
 # Ensure we can import sibling modules when run from any directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import tkinter as tk
+import customtkinter as ctk
 
 from data_model import load_config, save_config
 from resolve_api import ResolveConnection
 from hotkey_manager import HotkeyManager
 from ui import NodeToggleApp
+
+# Dark mode by default
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
 
 
 def main():
@@ -30,7 +34,7 @@ def main():
     resolve_conn.refresh_context()
 
     # Build UI
-    root = tk.Tk()
+    root = ctk.CTk()
     app = NodeToggleApp(root, resolve_conn, profile)
     app.update_status_bar()
 
