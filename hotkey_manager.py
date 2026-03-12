@@ -6,6 +6,31 @@ from typing import Callable, Optional
 
 from pynput import keyboard
 
+# macOS 15+ requires TISGetInputSourceProperty on the main thread.
+# Patch pynput to pre-fetch the keyboard layout here (import = main thread)
+# so the background listener thread never calls it.
+def _patch_pynput_tsm():
+    try:
+        from pynput._util.darwin import keycode_context, ListenerMixin
+        from pynput.keyboard import _darwin as _kb_darwin
+
+        _cached = [None]
+        with keycode_context() as ctx:
+            _cached[0] = ctx
+
+        def _patched_run(self):
+            self._context = _cached[0]
+            try:
+                ListenerMixin._run(self)
+            finally:
+                self._context = None
+
+        _kb_darwin.Listener._run = _patched_run
+    except Exception:
+        pass  # Non-macOS or pynput internals changed; fall back to default
+
+_patch_pynput_tsm()
+
 # Normalize modifier keys to canonical names
 _MODIFIER_MAP = {
     keyboard.Key.cmd: "cmd",

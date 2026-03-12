@@ -1,6 +1,7 @@
 """Modern customtkinter GUI for Node Toggle."""
 
 import os
+import sys
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox
@@ -31,7 +32,12 @@ RED = "#ef4444"
 
 FONT_FAMILY = "Helvetica Neue"
 LEVEL_NAMES = [l.display_name for l in NodeLevel]
-ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toggle.png")
+
+def _resource_path(filename: str) -> str:
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, filename)
+
+ICON_PATH = _resource_path("toggle.png")
 
 
 class AssignmentRow:
