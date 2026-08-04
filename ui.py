@@ -37,7 +37,7 @@ def _resource_path(filename: str) -> str:
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, filename)
 
-ICON_PATH = _resource_path("toggle.png")
+ICON_PATH = _resource_path("node-toggle.png")
 
 
 class AssignmentRow:

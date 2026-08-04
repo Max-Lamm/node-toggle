@@ -1,5 +1,6 @@
 """Global hotkey capture and typing detection for macOS."""
 
+import sys
 import time
 import threading
 from typing import Callable, Optional
@@ -26,10 +27,21 @@ def _patch_pynput_tsm():
                 self._context = None
 
         _kb_darwin.Listener._run = _patched_run
-    except Exception:
-        pass  # Non-macOS or pynput internals changed; fall back to default
+    except Exception as e:
+        # Non-macOS or pynput internals changed; fall back to default
+        print(f"[hotkey] pynput TSM patch skipped: {e}", file=sys.stderr)
 
 _patch_pynput_tsm()
+
+
+def is_accessibility_trusted() -> bool:
+    """Check if this process has macOS Accessibility permission."""
+    try:
+        import ApplicationServices
+        return bool(ApplicationServices.AXIsProcessTrusted())
+    except Exception as e:
+        print(f"[hotkey] AXIsProcessTrusted check failed: {e}", file=sys.stderr)
+        return False
 
 # Normalize modifier keys to canonical names
 _MODIFIER_MAP = {
@@ -88,7 +100,8 @@ def _is_text_field_focused() -> bool:
         if err != 0:
             return False
         return role in ("AXTextField", "AXTextArea", "AXComboBox", "AXSearchField")
-    except Exception:
+    except Exception as e:
+        print(f"[hotkey] text-field focus check failed: {e}", file=sys.stderr)
         return False
 
 
@@ -143,6 +156,9 @@ class HotkeyManager:
         self._listener: Optional[keyboard.Listener] = None
         self._recording = False
         self._modifiers_pressed: set[str] = set()  # normalized modifier names
+        self._listener_started = False
+        self._has_received_event = False
+        self._last_error: Optional[str] = None
 
     @property
     def recording(self) -> bool:
@@ -152,14 +168,31 @@ class HotkeyManager:
     def recording(self, value: bool):
         self._recording = value
 
+    @property
+    def status(self) -> dict:
+        """Current listener health snapshot for UI display."""
+        return {
+            "accessibility_trusted": is_accessibility_trusted(),
+            "listener_started": self._listener_started,
+            "has_received_event": self._has_received_event,
+            "last_error": self._last_error,
+        }
+
     def start(self):
         """Start the global keyboard listener."""
-        self._listener = keyboard.Listener(
-            on_press=self._on_press,
-            on_release=self._on_release,
-        )
-        self._listener.daemon = True
-        self._listener.start()
+        try:
+            self._listener = keyboard.Listener(
+                on_press=self._on_press,
+                on_release=self._on_release,
+            )
+            self._listener.daemon = True
+            self._listener.start()
+            self._listener_started = True
+            self._last_error = None
+        except Exception as e:
+            self._listener_started = False
+            self._last_error = str(e)
+            print(f"[hotkey] listener failed to start: {e}", file=sys.stderr)
 
     def stop(self):
         """Stop the listener."""
@@ -177,11 +210,13 @@ class HotkeyManager:
         return "+".join(parts)
 
     def _on_release(self, key):
+        self._has_received_event = True
         mod = self._get_modifier_name(key)
         if mod:
             self._modifiers_pressed.discard(mod)
 
     def _on_press(self, key):
+        self._has_received_event = True
         # Track modifier presses
         mod = self._get_modifier_name(key)
         if mod:
