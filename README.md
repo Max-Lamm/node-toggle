@@ -18,6 +18,7 @@ A lightweight macOS utility for toggling DaVinci Resolve color correction nodes 
 - macOS
 - Python 3.13+
 - DaVinci Resolve Studio (with scripting enabled)
+- Accessibility permissions granted (System Settings > Privacy & Security > Accessibility)
 
 ## Installation
 
@@ -42,6 +43,25 @@ python main.py
 4. Select a **Node** from the dropdown (populated from Resolve)
 5. Click **Record** and press the desired key combination
 6. Use **Presets** to save and switch between different configurations
+
+## Build
+
+Build a standalone macOS app bundle with PyInstaller:
+
+```bash
+source .venv/bin/activate
+pip install pyinstaller
+pyinstaller maxlamm_Node_Toggle.spec --noconfirm
+```
+
+Output: `dist/maxlamm Node Toggle.app`
+
+The build spec (`maxlamm_Node_Toggle.spec`) targets Apple Silicon (`arm64`) and
+bundles the app icon (`node-toggle.icns`) plus the pyobjc/pynput hidden imports
+required for global hotkey capture.
+
+The built app needs its own Accessibility permission, grant it under
+System Settings > Privacy & Security > Accessibility on first launch.
 
 ## Configuration
 

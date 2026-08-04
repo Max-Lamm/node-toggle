@@ -11,8 +11,9 @@ hotkey_manager.py    # Global hotkey capture via pynput + typing detection (macO
 ui.py                # TKinter GUI — assignment rows, preset management, hotkey recording
 data_model.py        # Data model (NodeLevel, NodeAssignment, AssignmentProfile) + JSON persistence
 requirements.txt     # Python dependencies
-toggle.icns          # macOS app icon
-maxlamm_Node_Toggle.spec  # PyInstaller build spec (not tracked in git)
+node-toggle.icns     # macOS app icon
+node-toggle.png      # App icon (PNG, bundled as data file by PyInstaller)
+maxlamm_Node_Toggle.spec  # PyInstaller build spec
 ```
 
 ## Tech Stack
@@ -40,8 +41,6 @@ python3.13 -m venv .venv
 .venv/bin/pyinstaller maxlamm_Node_Toggle.spec --noconfirm
 # Output: dist/maxlamm Node Toggle.app
 ```
-
-The `.spec` file is excluded from git (in `.gitignore`). To recreate it, see the build configuration in the project history.
 
 ## Architecture
 
