@@ -1,11 +1,34 @@
 """Global hotkey capture and typing detection for macOS."""
 
+import os
 import sys
 import time
 import threading
+from datetime import datetime
 from typing import Callable, Optional
 
 from pynput import keyboard
+
+# Set NODE_TOGGLE_DEBUG=1 to log every raw key event and a startup
+# permissions/layout snapshot to ~/.node_toggle/diagnose.log. stderr is
+# invisible inside the packaged .app bundle, so this writes to a file
+# instead. See diagnose_hotkeys.py for the standalone version of these
+# same checks.
+_DEBUG = os.environ.get("NODE_TOGGLE_DEBUG") == "1"
+_DEBUG_LOG_PATH = os.path.expanduser("~/.node_toggle/diagnose.log")
+
+
+def _debug_log(msg: str):
+    if not _DEBUG:
+        return
+    line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
+    try:
+        os.makedirs(os.path.dirname(_DEBUG_LOG_PATH), exist_ok=True)
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    print(line, file=sys.stderr)
 
 # macOS 15+ requires TISGetInputSourceProperty on the main thread.
 # Patch pynput to pre-fetch the keyboard layout here (import = main thread)
@@ -32,6 +55,56 @@ def _patch_pynput_tsm():
         print(f"[hotkey] pynput TSM patch skipped: {e}", file=sys.stderr)
 
 _patch_pynput_tsm()
+
+
+# macOS silently disables an event tap (kCGEventTapDisabledByTimeout /
+# ByUserInput) if its callback doesn't return quickly enough, e.g. under
+# system load. pynput 1.8.2 never re-enables it: the listener thread stays
+# alive in its run loop, but no key event is ever delivered again until the
+# process is relaunched. This is indistinguishable from "hotkeys are dead"
+# without a live process inspection. Patch tap creation to remember the tap
+# reference, and the handler to re-enable it when the OS disables it.
+def _patch_pynput_tap_recovery():
+    try:
+        from pynput._util.darwin import ListenerMixin
+        from Quartz import (
+            kCGEventTapDisabledByTimeout,
+            kCGEventTapDisabledByUserInput,
+            CGEventTapEnable,
+        )
+
+        _disabled_events = (kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput)
+
+        _original_create_event_tap = ListenerMixin._create_event_tap
+
+        def _patched_create_event_tap(self):
+            tap = _original_create_event_tap(self)
+            self._node_toggle_cg_tap = tap
+            return tap
+
+        ListenerMixin._create_event_tap = _patched_create_event_tap
+
+        _original_handler = ListenerMixin._handler
+
+        def _patched_handler(self, proxy, event_type, event, refcon):
+            if event_type in _disabled_events:
+                tap = getattr(self, "_node_toggle_cg_tap", None)
+                if tap is not None:
+                    try:
+                        CGEventTapEnable(tap, True)
+                        _debug_log(f"[hotkey] event tap disabled (type={event_type}), re-enabled")
+                    except Exception as e:
+                        _debug_log(f"[hotkey] failed to re-enable event tap: {e}")
+                else:
+                    _debug_log(f"[hotkey] event tap disabled (type={event_type}) but no tap reference")
+                return None
+            return _original_handler(self, proxy, event_type, event, refcon)
+
+        ListenerMixin._handler = _patched_handler
+    except Exception as e:
+        print(f"[hotkey] pynput tap-recovery patch skipped: {e}", file=sys.stderr)
+
+_patch_pynput_tap_recovery()
 
 
 def is_accessibility_trusted() -> bool:
@@ -180,6 +253,8 @@ class HotkeyManager:
 
     def start(self):
         """Start the global keyboard listener."""
+        if _DEBUG:
+            self._log_debug_snapshot()
         try:
             self._listener = keyboard.Listener(
                 on_press=self._on_press,
@@ -189,10 +264,32 @@ class HotkeyManager:
             self._listener.start()
             self._listener_started = True
             self._last_error = None
+            _debug_log("[hotkey] listener started")
         except Exception as e:
             self._listener_started = False
             self._last_error = str(e)
             print(f"[hotkey] listener failed to start: {e}", file=sys.stderr)
+            _debug_log(f"[hotkey] listener failed to start: {e}")
+
+    def _log_debug_snapshot(self):
+        """One-time permissions/layout snapshot, same checks as diagnose_hotkeys.py."""
+        _debug_log(f"=== HotkeyManager.start() snapshot (pid={os.getpid()}) ===")
+        _debug_log(f"accessibility_trusted = {is_accessibility_trusted()}")
+        try:
+            import Quartz
+            _debug_log(f"input_monitoring_allowed = {bool(Quartz.CGPreflightListenEventAccess())}")
+        except Exception as e:
+            _debug_log(f"CGPreflightListenEventAccess check FAILED: {e}")
+        try:
+            from pynput._util.darwin import keycode_context
+            with keycode_context() as ctx:
+                _keyboard_type, layout_data = ctx
+                if layout_data is None:
+                    _debug_log("layout_data = None  <-- BAD: chars will resolve to ''")
+                else:
+                    _debug_log(f"layout_data = {len(layout_data)} bytes")
+        except Exception as e:
+            _debug_log(f"keycode_context check FAILED: {e}")
 
     def stop(self):
         """Stop the listener."""
@@ -224,6 +321,12 @@ class HotkeyManager:
             return
 
         key_char = get_key_char(key)
+        if _DEBUG:
+            _debug_log(
+                f"_on_press: key={key!r} char={getattr(key, 'char', None)!r} "
+                f"vk={getattr(key, 'vk', None)!r} get_key_char()={key_char!r} "
+                f"recording={self._recording} modifiers={self._modifiers_pressed!r}"
+            )
         if not key_char:
             return
 
@@ -232,6 +335,7 @@ class HotkeyManager:
 
         # Recording mode: capture the full combo
         if self._recording:
+            _debug_log(f"_on_press: recording -> combo={combo!r}")
             self._on_record(combo)
             return
 
@@ -241,12 +345,15 @@ class HotkeyManager:
 
             # Check if a text field is focused
             if _is_text_field_focused():
+                _debug_log(f"_on_press: swallowed (text field focused), combo={combo!r}")
                 return
 
             # Check for typing burst
             if self._typing_detector.is_typing_burst():
+                _debug_log(f"_on_press: swallowed (typing burst), combo={combo!r}")
                 return
 
         # For modifier combos: skip typing detection (intentional action)
         # Check if this combo matches any registered hotkey
+        _debug_log(f"_on_press: dispatching combo={combo!r}")
         self._on_hotkey(combo)

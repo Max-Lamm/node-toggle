@@ -252,6 +252,14 @@ class NodeToggleApp:
             font=ctk.CTkFont(family=FONT_FAMILY, size=11),
         ).pack(anchor=tk.W, padx=(18, 0), pady=(1, 0))
 
+        self.hotkey_status_var = ctk.StringVar(value="")
+        self._hotkey_status_label = ctk.CTkLabel(
+            status_frame, textvariable=self.hotkey_status_var,
+            text_color=TEXT_SECONDARY,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+        )
+        self._hotkey_status_label.pack(anchor=tk.W, padx=(18, 0), pady=(1, 0))
+
         # ── Separator ──
         ctk.CTkFrame(self.root, height=1, fg_color=BORDER_COLOR).pack(fill=tk.X, padx=10, pady=(6, 0))
 
@@ -430,6 +438,27 @@ class NodeToggleApp:
             self._status_dot.configure(text_color=RED)
             self.status_var.set("Not connected")
             self.timeline_var.set("Make sure Resolve Studio is running")
+        self._update_hotkey_status()
+
+    def _update_hotkey_status(self):
+        mgr = getattr(self, "hotkey_mgr", None)
+        if mgr is None:
+            return
+        status = mgr.status
+        if not status["listener_started"]:
+            color = RED
+            text = f"Hotkeys: listener failed to start ({status['last_error']})"
+        elif not status["accessibility_trusted"]:
+            color = RED
+            text = "Hotkeys: Accessibility permission missing"
+        elif not status["has_received_event"]:
+            color = TEXT_SECONDARY
+            text = "Hotkeys: waiting for first key press…"
+        else:
+            color = GREEN
+            text = "Hotkeys: active"
+        self._hotkey_status_label.configure(text_color=color)
+        self.hotkey_status_var.set(text)
 
     def schedule_ui_update(self, func, *args):
         self.event_queue.put((func, args))

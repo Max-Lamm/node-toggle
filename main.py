@@ -39,8 +39,8 @@ def main():
     app.update_status_bar()
 
     # Hotkey callbacks
-    def on_hotkey(combo: str):
-        """Called when a valid hotkey press is detected (from listener thread)."""
+    def apply_hotkey(combo: str):
+        """Runs on the main thread via the event queue."""
         assignment = app.profile.get_by_hotkey(combo)
         if assignment and assignment.node_index > 0:
             # Toggle: flip internal state and apply
@@ -49,12 +49,22 @@ def main():
                 assignment.level, assignment.node_index, assignment._toggle_state
             )
 
+    def on_hotkey(combo: str):
+        """Called when a valid hotkey press is detected (from listener thread).
+
+        Must not call into Resolve's scripting API here: a slow response
+        can block the CGEventTap callback long enough for macOS to
+        silently disable the tap.
+        """
+        app.schedule_ui_update(apply_hotkey, combo)
+
     def on_record(combo: str):
         """Called when a key combo is captured during recording (from listener thread)."""
         app.schedule_ui_update(app.finish_hotkey_recording, combo)
 
     # Initialize hotkey manager
     hotkey_mgr = HotkeyManager(on_hotkey=on_hotkey, on_record=on_record)
+    app.hotkey_mgr = hotkey_mgr
 
     # Link recording state between UI and hotkey manager
     original_start_recording = app.start_hotkey_recording
