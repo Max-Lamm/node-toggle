@@ -11,6 +11,7 @@ a = Analysis(
         'AppKit',
         'Foundation',
         'ApplicationServices',
+        'HIServices',
         'Quartz',
         'objc',
     ],
@@ -56,5 +57,6 @@ app = BUNDLE(
         'CFBundleShortVersionString': '2.0.0',
         'NSHighResolutionCapable': True,
         'NSAccessibilityUsageDescription': 'Node Toggle needs Accessibility access to capture global hotkeys.',
+        'NSInputMonitoringUsageDescription': 'Node Toggle needs Input Monitoring access to capture global hotkeys.',
     },
 )

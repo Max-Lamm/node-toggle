@@ -448,9 +448,18 @@ class NodeToggleApp:
         if not status["listener_started"]:
             color = RED
             text = f"Hotkeys: listener failed to start ({status['last_error']})"
+        elif status["accessibility_trusted"] is None or status["input_monitoring_allowed"] is None:
+            color = RED
+            text = "Hotkeys: permission check failed (see ~/.node_toggle/diagnose.log)"
         elif not status["accessibility_trusted"]:
             color = RED
             text = "Hotkeys: Accessibility permission missing"
+        elif not status["input_monitoring_allowed"]:
+            color = RED
+            text = "Hotkeys: Input Monitoring permission missing"
+        elif status["event_tap_created"] is False:
+            color = RED
+            text = "Hotkeys: event tap could not be created"
         elif not status["has_received_event"]:
             color = TEXT_SECONDARY
             text = "Hotkeys: waiting for first key press…"

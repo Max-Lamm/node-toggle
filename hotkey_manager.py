@@ -17,9 +17,13 @@ from pynput import keyboard
 _DEBUG = os.environ.get("NODE_TOGGLE_DEBUG") == "1"
 _DEBUG_LOG_PATH = os.path.expanduser("~/.node_toggle/diagnose.log")
 
+# Set by the tap-recovery patch below once CGEventTapCreate has actually
+# been called. None until the listener has tried to create a tap.
+_event_tap_created: Optional[bool] = None
 
-def _debug_log(msg: str):
-    if not _DEBUG:
+
+def _debug_log(msg: str, force: bool = False):
+    if not _DEBUG and not force:
         return
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
     try:
@@ -80,6 +84,8 @@ def _patch_pynput_tap_recovery():
         def _patched_create_event_tap(self):
             tap = _original_create_event_tap(self)
             self._node_toggle_cg_tap = tap
+            global _event_tap_created
+            _event_tap_created = tap is not None
             return tap
 
         ListenerMixin._create_event_tap = _patched_create_event_tap
@@ -107,14 +113,53 @@ def _patch_pynput_tap_recovery():
 _patch_pynput_tap_recovery()
 
 
-def is_accessibility_trusted() -> bool:
-    """Check if this process has macOS Accessibility permission."""
+def _import_ax_module():
+    """Import whichever module exposes the AX* symbols in this environment.
+
+    The packaged .app bundle only ships HIServices as a compiled .so;
+    ApplicationServices is a pure-Python shim around it (plus CoreText/Quartz)
+    that resolves its symbols lazily via objc.createFrameworkDirAndGetattr,
+    so it's tried second rather than assumed present.
+    """
+    for module_name in ("HIServices", "ApplicationServices"):
+        try:
+            return __import__(module_name)
+        except Exception as e:
+            _debug_log(f"[hotkey] import {module_name} failed: {e}", force=True)
+    return None
+
+
+def is_accessibility_trusted() -> Optional[bool]:
+    """Check if this process has macOS Accessibility permission.
+
+    Returns True/False for a real permission result, or None if the check
+    itself couldn't run (e.g. the AX module failed to import) — that case
+    must not be reported to the user as "permission missing".
+    """
+    mod = _import_ax_module()
+    if mod is None:
+        return None
     try:
-        import ApplicationServices
-        return bool(ApplicationServices.AXIsProcessTrusted())
+        return bool(mod.AXIsProcessTrusted())
     except Exception as e:
         print(f"[hotkey] AXIsProcessTrusted check failed: {e}", file=sys.stderr)
-        return False
+        _debug_log(f"[hotkey] AXIsProcessTrusted check failed: {e}", force=True)
+        return None
+
+
+def is_input_monitoring_allowed() -> Optional[bool]:
+    """Check if this process has macOS Input Monitoring permission.
+
+    pynput's global key listener relies on a Quartz event tap, which needs
+    this permission (separate from Accessibility). Returns None if the
+    check itself couldn't run.
+    """
+    try:
+        import Quartz
+        return bool(Quartz.CGPreflightListenEventAccess())
+    except Exception as e:
+        _debug_log(f"[hotkey] CGPreflightListenEventAccess check failed: {e}", force=True)
+        return None
 
 # Normalize modifier keys to canonical names
 _MODIFIER_MAP = {
@@ -154,20 +199,22 @@ def format_hotkey(hotkey: str) -> str:
 
 def _is_text_field_focused() -> bool:
     """Check if a text input field is currently focused (macOS Accessibility API)."""
+    mod = _import_ax_module()
+    if mod is None:
+        return False
     try:
-        import ApplicationServices
-        system_element = ApplicationServices.AXUIElementCreateSystemWide()
-        err, focused_app = ApplicationServices.AXUIElementCopyAttributeValue(
+        system_element = mod.AXUIElementCreateSystemWide()
+        err, focused_app = mod.AXUIElementCopyAttributeValue(
             system_element, "AXFocusedApplication", None
         )
         if err != 0 or focused_app is None:
             return False
-        err, focused_element = ApplicationServices.AXUIElementCopyAttributeValue(
+        err, focused_element = mod.AXUIElementCopyAttributeValue(
             focused_app, "AXFocusedUIElement", None
         )
         if err != 0 or focused_element is None:
             return False
-        err, role = ApplicationServices.AXUIElementCopyAttributeValue(
+        err, role = mod.AXUIElementCopyAttributeValue(
             focused_element, "AXRole", None
         )
         if err != 0:
@@ -246,6 +293,8 @@ class HotkeyManager:
         """Current listener health snapshot for UI display."""
         return {
             "accessibility_trusted": is_accessibility_trusted(),
+            "input_monitoring_allowed": is_input_monitoring_allowed(),
+            "event_tap_created": _event_tap_created,
             "listener_started": self._listener_started,
             "has_received_event": self._has_received_event,
             "last_error": self._last_error,
@@ -253,8 +302,7 @@ class HotkeyManager:
 
     def start(self):
         """Start the global keyboard listener."""
-        if _DEBUG:
-            self._log_debug_snapshot()
+        self._log_debug_snapshot()
         try:
             self._listener = keyboard.Listener(
                 on_press=self._on_press,
@@ -272,24 +320,23 @@ class HotkeyManager:
             _debug_log(f"[hotkey] listener failed to start: {e}")
 
     def _log_debug_snapshot(self):
-        """One-time permissions/layout snapshot, same checks as diagnose_hotkeys.py."""
-        _debug_log(f"=== HotkeyManager.start() snapshot (pid={os.getpid()}) ===")
-        _debug_log(f"accessibility_trusted = {is_accessibility_trusted()}")
-        try:
-            import Quartz
-            _debug_log(f"input_monitoring_allowed = {bool(Quartz.CGPreflightListenEventAccess())}")
-        except Exception as e:
-            _debug_log(f"CGPreflightListenEventAccess check FAILED: {e}")
+        """Permissions/layout snapshot on every start(), same checks as
+        diagnose_hotkeys.py. Always written (force=True) since stderr is
+        invisible inside the packaged .app bundle — this is the only trace
+        of *why* the hotkey status came out the way it did."""
+        _debug_log(f"=== HotkeyManager.start() snapshot (pid={os.getpid()}) ===", force=True)
+        _debug_log(f"accessibility_trusted = {is_accessibility_trusted()}", force=True)
+        _debug_log(f"input_monitoring_allowed = {is_input_monitoring_allowed()}", force=True)
         try:
             from pynput._util.darwin import keycode_context
             with keycode_context() as ctx:
                 _keyboard_type, layout_data = ctx
                 if layout_data is None:
-                    _debug_log("layout_data = None  <-- BAD: chars will resolve to ''")
+                    _debug_log("layout_data = None  <-- BAD: chars will resolve to ''", force=True)
                 else:
-                    _debug_log(f"layout_data = {len(layout_data)} bytes")
+                    _debug_log(f"layout_data = {len(layout_data)} bytes", force=True)
         except Exception as e:
-            _debug_log(f"keycode_context check FAILED: {e}")
+            _debug_log(f"keycode_context check FAILED: {e}", force=True)
 
     def stop(self):
         """Stop the listener."""

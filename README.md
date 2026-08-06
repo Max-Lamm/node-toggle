@@ -60,8 +60,24 @@ The build spec (`maxlamm_Node_Toggle.spec`) targets Apple Silicon (`arm64`) and
 bundles the app icon (`node-toggle.icns`) plus the pyobjc/pynput hidden imports
 required for global hotkey capture.
 
-The built app needs its own Accessibility permission, grant it under
-System Settings > Privacy & Security > Accessibility on first launch.
+The built app needs its own Accessibility **and** Input Monitoring permission,
+grant both under System Settings > Privacy & Security on first launch.
+
+The app is ad-hoc signed (no Apple Developer ID), so every rebuild produces a
+new code signature hash. macOS ties TCC (Accessibility/Input Monitoring)
+approval to that hash, so a permission granted to a previous build silently
+stops applying to the new one — the app looks "enabled" in System Settings
+but the toggle doesn't actually cover the freshly built binary. If hotkeys
+stop working after a rebuild, reset and re-grant:
+
+```bash
+tccutil reset Accessibility com.maxlamm.node-toggle
+tccutil reset ListenEvent com.maxlamm.node-toggle
+```
+
+Then relaunch the app and re-approve both prompts. Set `NODE_TOGGLE_DEBUG=1`
+before launching to write a permissions snapshot to
+`~/.node_toggle/diagnose.log` if the status line doesn't clear up.
 
 ## Configuration
 
