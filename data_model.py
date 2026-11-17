@@ -30,13 +30,18 @@ class NodeLevel(Enum):
         raise ValueError(f"Unknown level: {name}")
 
 
+HOTKEY_SLOTS = 2
+
+
 @dataclass
 class NodeAssignment:
     """A single node-to-hotkey binding."""
     level: NodeLevel
     node_index: int          # 1-based, as per Resolve API
     node_label: str
-    hotkey: Optional[str] = None  # e.g. "t", "cmd+1", "ctrl+shift+t"
+    # Up to HOTKEY_SLOTS hotkeys, all active at the same time
+    # (e.g. Stream Deck + laptop). Each is e.g. "t", "cmd+1", "ctrl+shift+t".
+    hotkeys: list[str] = field(default_factory=list)
     _toggle_state: bool = field(default=True, repr=False)  # internal toggle tracker
 
     def to_dict(self) -> dict:
@@ -44,7 +49,9 @@ class NodeAssignment:
             "level": self.level.value,
             "node_index": self.node_index,
             "node_label": self.node_label,
-            "hotkey": self.hotkey,
+            "hotkeys": list(self.hotkeys),
+            # First slot also as "hotkey" so older app versions still read it
+            "hotkey": self.hotkeys[0] if self.hotkeys else None,
         }
 
     @classmethod
@@ -53,8 +60,20 @@ class NodeAssignment:
             level=NodeLevel(data["level"]),
             node_index=data["node_index"],
             node_label=data["node_label"],
-            hotkey=data.get("hotkey"),
+            hotkeys=_read_hotkeys(data),
         )
+
+    def matches(self, normalized: str) -> bool:
+        """True if any slot holds this (already normalized) hotkey."""
+        return any(h and _normalize_hotkey(h) == normalized for h in self.hotkeys)
+
+
+def _read_hotkeys(data: dict) -> list[str]:
+    """Read the hotkey list. Old configs only have a single "hotkey"."""
+    hotkeys = data.get("hotkeys")
+    if not isinstance(hotkeys, list):
+        hotkeys = [data.get("hotkey")]
+    return [h for h in hotkeys if h][:HOTKEY_SLOTS]
 
 
 def _normalize_hotkey(hotkey: str) -> str:
@@ -75,7 +94,7 @@ class AssignmentProfile:
         """Return the assignment bound to a given hotkey, or None."""
         normalized = _normalize_hotkey(hotkey)
         for a in self.assignments:
-            if a.hotkey and _normalize_hotkey(a.hotkey) == normalized:
+            if a.matches(normalized):
                 return a
         return None
 
@@ -83,14 +102,26 @@ class AssignmentProfile:
         """Return all assignments for a given node level."""
         return [a for a in self.assignments if a.level == level]
 
-    def is_hotkey_taken(self, hotkey: str, exclude: Optional[NodeAssignment] = None) -> bool:
-        """Check if a hotkey is already assigned."""
+    def is_hotkey_taken(
+        self,
+        hotkey: str,
+        exclude: Optional[NodeAssignment] = None,
+        exclude_slot: Optional[int] = None,
+    ) -> bool:
+        """Check if a hotkey is already assigned.
+
+        With exclude + exclude_slot, only that one slot is skipped, so the
+        other slot of the same assignment still counts as a conflict.
+        """
         normalized = _normalize_hotkey(hotkey)
         for a in self.assignments:
-            if a is exclude:
+            if a is exclude and exclude_slot is None:
                 continue
-            if a.hotkey and _normalize_hotkey(a.hotkey) == normalized:
-                return True
+            for i, h in enumerate(a.hotkeys):
+                if a is exclude and i == exclude_slot:
+                    continue
+                if h and _normalize_hotkey(h) == normalized:
+                    return True
         return False
 
     def add(self, assignment: NodeAssignment):

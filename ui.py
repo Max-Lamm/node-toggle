@@ -10,7 +10,7 @@ import queue
 from typing import Optional
 
 from data_model import (
-    NodeLevel, NodeAssignment, AssignmentProfile,
+    NodeLevel, NodeAssignment, AssignmentProfile, HOTKEY_SLOTS,
     save_config, list_presets, save_preset, load_preset, delete_preset,
 )
 from hotkey_manager import format_hotkey
@@ -24,6 +24,7 @@ ACCENT_HOVER = "#c73a52"
 TEXT_PRIMARY = "#eaeaea"
 TEXT_SECONDARY = "#888888"
 BORDER_COLOR = "#444444"
+CHIP_BG = "#444444"
 BUTTON_FG = "#eaeaea"
 BUTTON_BG = "#3a3a3a"
 BUTTON_HOVER = "#4a4a4a"
@@ -38,6 +39,13 @@ def _resource_path(filename: str) -> str:
     return os.path.join(base, filename)
 
 ICON_PATH = _resource_path("node-toggle.png")
+
+_KEY_SYMBOLS = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘", " ": "Space"}
+
+
+def hotkey_parts(hotkey: str) -> list[str]:
+    """Split a hotkey into display chips. E.g. 'shift+cmd+t' -> ['⇧', '⌘', 'T']."""
+    return [_KEY_SYMBOLS.get(p, p.upper()) for p in hotkey.split("+")]
 
 
 class AssignmentRow:
@@ -86,34 +94,10 @@ class AssignmentRow:
             font=ctk.CTkFont(family=FONT_FAMILY, size=12),
             command=self._on_node_changed,
         )
-        self.node_combo.pack(side=tk.LEFT, padx=(0, 6))
-
-        # Row 2: Hotkey + Record + Remove
-        row2 = ctk.CTkFrame(inner, fg_color="transparent")
-        row2.pack(fill=tk.X)
-
-        hotkey_display = format_hotkey(assignment.hotkey) if assignment.hotkey else "—"
-        self.hotkey_var = ctk.StringVar(value=hotkey_display)
-        self.hotkey_entry = ctk.CTkEntry(
-            row2, textvariable=self.hotkey_var,
-            width=80, height=26, state="disabled", justify="center",
-            fg_color=BG_DARK, border_color=BORDER_COLOR, border_width=1,
-            text_color=TEXT_PRIMARY, corner_radius=4,
-            font=ctk.CTkFont(family="Menlo", size=11),
-        )
-        self.hotkey_entry.pack(side=tk.LEFT, padx=(0, 4))
-
-        self.record_btn = ctk.CTkButton(
-            row2, text="Record", width=60, height=26,
-            fg_color=ACCENT, hover_color=ACCENT_HOVER,
-            text_color=BUTTON_FG, corner_radius=4,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
-            command=self._start_recording,
-        )
-        self.record_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.node_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
 
         self.remove_btn = ctk.CTkButton(
-            row2, text="Remove", width=60, height=26,
+            row1, text="Remove", width=60, height=26,
             fg_color="transparent", hover_color=BUTTON_HOVER,
             text_color=TEXT_SECONDARY, border_color=BORDER_COLOR,
             border_width=1, corner_radius=4,
@@ -121,6 +105,14 @@ class AssignmentRow:
             command=self._remove,
         )
         self.remove_btn.pack(side=tk.RIGHT)
+
+        # Hotkey list: one box per hotkey, all active at the same time.
+        # _recording_slot is the index being recorded. It equals
+        # len(hotkeys) while a new hotkey is being added.
+        self._recording_slot: Optional[int] = None
+        self.hotkey_area = ctk.CTkFrame(inner, fg_color="transparent")
+        self.hotkey_area.pack(fill=tk.X)
+        self._render_hotkeys()
 
         self._refresh_nodes()
         if assignment.node_label:
@@ -166,25 +158,131 @@ class AssignmentRow:
                 self.node_var.set(val)
                 return
 
-    def _start_recording(self):
-        self.record_btn.configure(text="...", fg_color=ACCENT_HOVER)
+    # --- Hotkey list ---
+
+    def _render_hotkeys(self):
+        """Rebuild the hotkey boxes from assignment.hotkeys + recording state."""
+        for child in self.hotkey_area.winfo_children():
+            child.destroy()
+
+        hotkeys = self.assignment.hotkeys
+        slots = len(hotkeys)
+        if self._recording_slot == slots or slots == 0:
+            slots += 1  # placeholder box for a new hotkey
+        can_add = self._recording_slot is None and 0 < len(hotkeys) < HOTKEY_SLOTS
+
+        for slot in range(slots):
+            line = ctk.CTkFrame(self.hotkey_area, fg_color="transparent")
+            line.pack(fill=tk.X, pady=(0, 4) if slot < slots - 1 else 0)
+            hotkey = hotkeys[slot] if slot < len(hotkeys) else None
+            self._build_hotkey_box(line, slot, hotkey)
+            if can_add and slot == slots - 1:
+                ctk.CTkButton(
+                    line, text="+", width=30, height=30,
+                    fg_color=BUTTON_BG, hover_color=BUTTON_HOVER,
+                    text_color=BUTTON_FG, corner_radius=6,
+                    font=ctk.CTkFont(family=FONT_FAMILY, size=16),
+                    command=lambda: self._start_recording(len(self.assignment.hotkeys)),
+                ).pack(side=tk.RIGHT, padx=(6, 0))
+            elif HOTKEY_SLOTS > 1:
+                # keep all boxes the same width as the one next to "+"
+                ctk.CTkFrame(line, width=30, height=30, fg_color="transparent").pack(
+                    side=tk.RIGHT, padx=(6, 0))
+
+    def _build_hotkey_box(self, parent, slot: int, hotkey: Optional[str]):
+        recording = self._recording_slot == slot
+        box = ctk.CTkFrame(
+            parent, height=30, fg_color=BG_DARK, corner_radius=6, border_width=1,
+            border_color=ACCENT if recording else BORDER_COLOR,
+        )
+        box.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        box.pack_propagate(False)
+
+        content = ctk.CTkFrame(box, fg_color="transparent")
+        content.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0), pady=3)
+
+        if recording:
+            self._hint(content, "Press a key…", TEXT_PRIMARY)
+        elif hotkey:
+            for part in hotkey_parts(hotkey):
+                ctk.CTkLabel(
+                    content, text=part, height=22, fg_color=CHIP_BG,
+                    corner_radius=4, text_color=TEXT_PRIMARY,
+                    font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                ).pack(side=tk.LEFT, padx=(0, 4), ipadx=5)
+        else:
+            self._hint(content, "Click to add a shortcut", TEXT_SECONDARY)
+            for w in (box, content, *content.winfo_children()):
+                w.bind("<Button-1>", lambda _e, s=slot: self._start_recording(s))
+
+        # Delete: removes an existing hotkey or cancels the current recording
+        if hotkey and not recording:
+            self._icon_btn(box, "⌫", lambda s=slot: self._delete_hotkey(s))
+        if not recording:
+            self._icon_btn(box, "✎", lambda s=slot: self._start_recording(s))
+        else:
+            self._icon_btn(box, "Esc", self._stop_recording, size=10)
+
+    @staticmethod
+    def _hint(parent, text: str, color: str):
+        ctk.CTkLabel(
+            parent, text=text, height=22, text_color=color,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+    @staticmethod
+    def _icon_btn(parent, text: str, command, size: int = 14):
+        ctk.CTkButton(
+            parent, text=text, width=26, height=22,
+            fg_color="transparent", hover_color=BUTTON_HOVER,
+            text_color=TEXT_SECONDARY, corner_radius=4,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=size),
+            command=command,
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+    def _start_recording(self, slot: int):
+        self._recording_slot = slot
+        self._render_hotkeys()
         self.app.start_hotkey_recording(self)
 
+    def _stop_recording(self):
+        """Cancel via the Esc button in the box."""
+        self.app.cancel_hotkey_recording(self)
+        self.cancel_recording()
+
+    def _delete_hotkey(self, slot: int):
+        if slot < len(self.assignment.hotkeys):
+            del self.assignment.hotkeys[slot]
+            self.app.save()
+        if self._recording_slot is not None:
+            self.app.cancel_hotkey_recording(self)
+        self._recording_slot = None
+        self._render_hotkeys()
+
     def finish_recording(self, combo: str):
-        self.record_btn.configure(text="Record", fg_color=ACCENT)
-        if self.app.profile.is_hotkey_taken(combo, exclude=self.assignment):
+        slot = self._recording_slot
+        if slot is None:
+            return
+        self._recording_slot = None
+        if self.app.profile.is_hotkey_taken(combo, exclude=self.assignment, exclude_slot=slot):
+            self._render_hotkeys()
             messagebox.showwarning(
                 "Hotkey Conflict",
                 f"'{format_hotkey(combo)}' is already assigned.\n"
                 "Choose a different key.",
             )
             return
-        self.assignment.hotkey = combo
-        self.hotkey_var.set(format_hotkey(combo))
+        if slot < len(self.assignment.hotkeys):
+            self.assignment.hotkeys[slot] = combo
+        else:
+            self.assignment.hotkeys.append(combo)
+        self._render_hotkeys()
         self.app.save()
 
     def cancel_recording(self):
-        self.record_btn.configure(text="Record", fg_color=ACCENT)
+        if self._recording_slot is not None:
+            self._recording_slot = None
+            self._render_hotkeys()
 
     def _remove(self):
         self.app.remove_assignment(self)
@@ -347,6 +445,7 @@ class NodeToggleApp:
         self.save()
 
     def remove_assignment(self, row: AssignmentRow):
+        self.cancel_hotkey_recording(row)
         self.profile.remove(row.assignment)
         self._rows.remove(row)
         row.destroy()
@@ -419,6 +518,13 @@ class NodeToggleApp:
             row = self._recording_row
             self._recording_row = None
             row.finish_recording(combo)
+
+    def cancel_hotkey_recording(self, row: AssignmentRow):
+        if self._recording_row is row:
+            self._recording_row = None
+            mgr = getattr(self, "hotkey_mgr", None)
+            if mgr:
+                mgr.recording = False
 
     @property
     def is_recording(self) -> bool:
